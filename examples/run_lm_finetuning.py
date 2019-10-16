@@ -86,7 +86,7 @@ class TextDataset(Dataset):
                 tokenized_text = mp.map(tokenizer.tokenize, tqdm(batches))
                 #flatten = lambda l: [item for sublist in l for item in sublist]
                 tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
-                tokenized_text = itertools.chain.from_iterable(tokenized_text)
+                tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
             end = time.time()
             logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
 

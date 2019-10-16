@@ -127,6 +127,7 @@ tensorflow_code
 # Models
 models
 proc_data
+trained_models
 
 # examples
 runs
