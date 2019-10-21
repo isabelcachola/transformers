@@ -64,50 +64,50 @@ class TextDataset(Dataset):
         assert os.path.isfile(file_path)
         self.tldr = tldr
         directory, filename = os.path.split(file_path)
-        cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
+        # cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
+        #
+        # if os.path.exists(cached_features_file):
+        #     logger.info("Loading features from cached file %s", cached_features_file)
+        #     with open(cached_features_file, 'rb') as handle:
+        #         self.examples = pickle.load(handle)
+        # else:
+        #     logger.info("Creating features from dataset file at %s", directory)
 
-        if os.path.exists(cached_features_file):
-            logger.info("Loading features from cached file %s", cached_features_file)
-            with open(cached_features_file, 'rb') as handle:
-                self.examples = pickle.load(handle)
+        self.examples = []
+        with open(file_path, encoding="utf-8") as f:
+            batches = f.readlines()
+        self.sep_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|TLDR|>'))
+        self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|endoftext|>'))
+        self.padding = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|PAD|>'))[0]
+
+        num_cores = multiprocessing.cpu_count() - 2
+        start = time.time()
+        with multiprocessing.Pool(num_cores) as mp:
+            tokenized_text = mp.map(tokenizer.tokenize, tqdm(batches))
+            #flatten = lambda l: [item for sublist in l for item in sublist]
+            tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
+            tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
+        end = time.time()
+        logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
+
+        #tokenized_text = tokenizer.convert_tokens_to_ids(text)
+        if self.tldr:
+            i = 0
+            while i < len(tokenized_text)-block_size+1:
+                example = tokenized_text[i:i+block_size]
+                i, example = self._truncate_example(i, example, tokenizer)
+                i += block_size
+                self.examples.append(example)
         else:
-            logger.info("Creating features from dataset file at %s", directory)
-
-            self.examples = []
-            with open(file_path, encoding="utf-8") as f:
-                batches = f.readlines()
-            self.sep_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|TLDR|>'))
-            self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|endoftext|>'))
-            self.padding = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|PAD|>'))[0]
-
-            num_cores = multiprocessing.cpu_count() - 2
-            start = time.time()
-            with multiprocessing.Pool(num_cores) as mp:
-                tokenized_text = mp.map(tokenizer.tokenize, tqdm(batches))
-                #flatten = lambda l: [item for sublist in l for item in sublist]
-                tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
-                tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
-            end = time.time()
-            logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
-
-            #tokenized_text = tokenizer.convert_tokens_to_ids(text)
-            if self.tldr:
-                i = 0
-                while i < len(tokenized_text)-block_size+1:
-                    example = tokenized_text[i:i+block_size]
-                    i, example = self._truncate_example(i, example, tokenizer)
-                    i += block_size
-                    self.examples.append(example)
-            else:
-                for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
-                    self.examples.append(tokenized_text[i:i + block_size])
+            for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
+                self.examples.append(tokenized_text[i:i + block_size])
             # Note that we are loosing the last truncated example here for the sake of simplicity (no padding)
             # If your dataset is small, first you should loook for a bigger one :-) and second you
             # can change this behavior by adding (model specific) padding.
             del tokenized_text # Delete large variable from memory
-            logger.info("Saving features into cached file %s", cached_features_file)
-            with open(cached_features_file, 'wb') as handle:
-                pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            # logger.info("Saving features into cached file %s", cached_features_file)
+            # with open(cached_features_file, 'wb') as handle:
+            #     pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def __len__(self):
         return len(self.examples)
