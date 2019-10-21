@@ -34,6 +34,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, SequentialSampler, RandomSampler
 from models.transformers.examples import run_generation
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import multiprocessing
 from torch.utils.data.distributed import DistributedSampler
 from tensorboardX import SummaryWriter
@@ -227,7 +228,10 @@ def train(args, train_dataset, model, tokenizer):
             inputs, labels = mask_tokens(batch, tokenizer, args) if args.mlm else (batch, batch)
             # Handling for uneven num samples
             if inputs.shape[1] == 1:
-                inputs = inputs.unsqueeze(1)
+                total_length = inputs.size(1)
+                inputs, _ = pad_packed_sequence(packed_output, batch_first=True,
+                                                total_length=total_length)
+
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
             model.train()
