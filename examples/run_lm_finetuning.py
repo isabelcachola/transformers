@@ -129,7 +129,7 @@ class TextDataset(Dataset):
 def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
     dataset = TextDataset(tokenizer, file_path=args.eval_data_file if evaluate else args.train_data_file, block_size=args.block_size, tldr=args.tldr)
     # Ignore incomplete batches
-    n = len(dataset) % args.train_batch_size
+    n = len(dataset) % args.per_gpu_train_batch_size
     if n != 0:
         dataset.examples = dataset.examples[:-n]
     return dataset
