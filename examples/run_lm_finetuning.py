@@ -85,7 +85,6 @@ class TextDataset(Dataset):
         start = time.time()
         with multiprocessing.Pool(num_cores) as mp:
             tokenized_text = mp.map(tokenizer.tokenize, tqdm(batches))
-            #flatten = lambda l: [item for sublist in l for item in sublist]
             tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
             tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
         end = time.time()
@@ -102,9 +101,6 @@ class TextDataset(Dataset):
         else:
             for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
                 self.examples.append(tokenized_text[i:i + block_size])
-            # Note that we are loosing the last truncated example here for the sake of simplicity (no padding)
-            # If your dataset is small, first you should loook for a bigger one :-) and second you
-            # can change this behavior by adding (model specific) padding.
             del tokenized_text # Delete large variable from memory
             # logger.info("Saving features into cached file %s", cached_features_file)
             # with open(cached_features_file, 'wb') as handle:
@@ -127,14 +123,15 @@ class TextDataset(Dataset):
                 max_idx = j
         for j in range(max_idx+len_end, len_ex):
             example[j] = self.padding
-        # print(f'\n{len(example)}, {max_idx}')
-        # print(tokenizer.decode(example))
-        # print('\n\n')
-        # truncated_example = example[:max_idx+len_end]
+
         return i+max_idx+len_end, example
 
 def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
     dataset = TextDataset(tokenizer, file_path=args.eval_data_file if evaluate else args.train_data_file, block_size=args.block_size, tldr=args.tldr)
+    # Ignore incomplete batches
+    n = len(dataset) % args.train_batch_size
+    if n != 0:
+        dataset.examples = dataset.examples[:-n]
     return dataset
 
 
@@ -225,13 +222,8 @@ def train(args, train_dataset, model, tokenizer):
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
+            print(batch.shape)
             inputs, labels = mask_tokens(batch, tokenizer, args) if args.mlm else (batch, batch)
-            # Handling for uneven num samples
-            if inputs.shape[1] == 1:
-                total_length = inputs.size(1)
-                inputs, _ = pad_packed_sequence(packed_output, batch_first=True,
-                                                total_length=total_length)
-
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
             model.train()
