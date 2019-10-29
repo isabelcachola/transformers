@@ -61,50 +61,50 @@ MODEL_CLASSES = {
 
 
 class TextDataset(Dataset):
-    def __init__(self, tokenizer, file_path='train', block_size=512, tldr=False):
+    def __init__(self, tokenizer, file_path='train', block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
         assert os.path.isfile(file_path)
-        self.tldr = tldr
         directory, filename = os.path.split(file_path)
-        # cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
-        #
-        # if os.path.exists(cached_features_file):
-        #     logger.info("Loading features from cached file %s", cached_features_file)
-        #     with open(cached_features_file, 'rb') as handle:
-        #         self.examples = pickle.load(handle)
-        # else:
-        #     logger.info("Creating features from dataset file at %s", directory)
+        cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
 
-        self.examples = []
-        with open(file_path, encoding="utf-8") as f:
-            batches = f.readlines()
-        self.sep_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|TLDR|>'))
-        self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|endoftext|>'))
-        self.padding = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|PAD|>'))[0]
-
-        num_cores = multiprocessing.cpu_count() - 2
-        start = time.time()
-        with multiprocessing.Pool(num_cores) as mp:
-            tokenized_text = mp.map(tokenizer.tokenize, tqdm(batches))
-            tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
-            tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
-        end = time.time()
-        logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
-
-        #tokenized_text = tokenizer.convert_tokens_to_ids(text)
-        if self.tldr:
-            i = 0
-            while i < len(tokenized_text)-block_size+1:
-                example = tokenized_text[i:i+block_size]
-                i, example = self._truncate_example(i, example, tokenizer)
-                i += block_size
-                self.examples.append(example)
+        if os.path.exists(cached_features_file) and not overwrite_cache:
+            logger.info("Loading features from cached file %s", cached_features_file)
+            with open(cached_features_file, 'rb') as handle:
+                self.examples = pickle.load(handle)
         else:
-            for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
-                self.examples.append(tokenized_text[i:i + block_size])
-            del tokenized_text # Delete large variable from memory
-            # logger.info("Saving features into cached file %s", cached_features_file)
-            # with open(cached_features_file, 'wb') as handle:
-            #     pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.info("Creating features from dataset file at %s", directory)
+
+            self.examples = []
+            with open(file_path, encoding="utf-8") as f:
+                batches = f.readlines()
+            self.sep_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|TLDR|>'))
+            self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|endoftext|>'))
+            self.padding = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|PAD|>'))[0]
+
+            if num_cores == -1:
+                num_cores = multiprocessing.cpu_count() - 2
+
+            start = time.time()
+            with multiprocessing.Pool(num_cores) as mp:
+                tokenized_text = mp.map(tokenizer.tokenize, tqdm(batches))
+                tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
+                tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
+            end = time.time()
+            logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
+
+            if tldr:
+                i = 0
+                while i < len(tokenized_text)-block_size+1:
+                    example = tokenized_text[i:i+block_size]
+                    i, example = self._truncate_example(i, example)
+                    i += block_size
+                    self.examples.append(example)
+            else:
+                for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
+                    self.examples.append(tokenized_text[i:i + block_size])
+                del tokenized_text # Delete large variable from memory
+            logger.info("Saving features into cached file %s", cached_features_file)
+            with open(cached_features_file, 'wb') as handle:
+                pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def __len__(self):
         return len(self.examples)
@@ -112,14 +112,14 @@ class TextDataset(Dataset):
     def __getitem__(self, item):
         return torch.tensor(self.examples[item])
 
-    def _truncate_example(self, i, example, tokenizer):
+    # Truncates examples to the last end token then pads
+    def _truncate_example(self, i, example):
         max_idx = 0
         len_end = len(self.end_token)
         len_ex = len(example)
         for j in range(len_ex - len_end + 2):
             temp = example[j:j + len_end]
             if temp == self.end_token and j > max_idx:
-                # print('HERE')
                 max_idx = j
         for j in range(max_idx+len_end, len_ex):
             example[j] = self.padding
@@ -127,8 +127,14 @@ class TextDataset(Dataset):
         return i+max_idx+len_end, example
 
 def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
-    dataset = TextDataset(tokenizer, file_path=args.eval_data_file if evaluate else args.train_data_file, block_size=args.block_size, tldr=args.tldr)
+    dataset = TextDataset(tokenizer, file_path=args.eval_data_file if evaluate else args.train_data_file,
+                          block_size=args.block_size,
+                          tldr=args.tldr,
+                          num_cores=args.num_cores,
+                          overwrite_cache=args.overwrite_cache)
+
     # Ignore incomplete batches
+    # If you don't do this, you'll get an error at the end of training
     n = len(dataset) % args.per_gpu_train_batch_size
     if n != 0:
         dataset.examples = dataset.examples[:-n]
@@ -403,7 +409,7 @@ def main(args):
                         help="Evaluate all checkpoints starting with the same prefix as model_name_or_path ending and ending with step number")
     parser.add_argument("--no_cuda", action='store_true',
                         help="Avoid using CUDA when available")
-    parser.add_argument('--overwrite_output_dir', action='store_true',
+    parser.add_argument('--overwrite_output_dir', action='store_true', default=False,
                         help="Overwrite the content of the output directory")
     parser.add_argument('--overwrite_cache', action='store_true',
                         help="Overwrite the cached training and evaluation sets")
@@ -421,6 +427,7 @@ def main(args):
     parser.add_argument('--server_port', type=str, default='', help="For distant debugging.")
 
     parser.add_argument('--tldr', action='store_true', default=False, help='For tldr task')
+    parser.add_argument('--num_cores', default=-1, type=int, help='Num CPUs for data processing')
 
     args = parser.parse_args(args)
 
@@ -535,7 +542,6 @@ def main(args):
             result = dict((k + '_{}'.format(global_step), v) for k, v in result.items())
             results.update(result)
 
-    # print(results)
     return results
 
 if __name__ == "__main__":
