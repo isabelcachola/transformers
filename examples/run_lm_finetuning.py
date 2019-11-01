@@ -33,7 +33,6 @@ import itertools
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, SequentialSampler, RandomSampler
-from models.transformers.examples import run_generation
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import multiprocessing
 from torch.utils.data.distributed import DistributedSampler
@@ -64,6 +63,7 @@ class TextDataset(Dataset):
     def __init__(self, tokenizer, file_path='train', block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
         assert os.path.isfile(file_path)
         directory, filename = os.path.split(file_path)
+        os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
         cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
 
         if os.path.exists(cached_features_file) and not overwrite_cache:
@@ -101,7 +101,8 @@ class TextDataset(Dataset):
             else:
                 for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
                     self.examples.append(tokenized_text[i:i + block_size])
-                del tokenized_text # Delete large variable from memory
+                del tokenized_text  # Delete large variable from memory
+
             logger.info("Saving features into cached file %s", cached_features_file)
             with open(cached_features_file, 'wb') as handle:
                 pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -228,7 +229,7 @@ def train(args, train_dataset, model, tokenizer):
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            print(batch.shape)
+            # print(batch.shape)
             inputs, labels = mask_tokens(batch, tokenizer, args) if args.mlm else (batch, batch)
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
