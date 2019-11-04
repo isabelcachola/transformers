@@ -38,6 +38,9 @@ import multiprocessing
 from torch.utils.data.distributed import DistributedSampler
 from tensorboardX import SummaryWriter
 from tqdm import tqdm, trange
+from os import listdir
+from os.path import isfile, join
+
 
 from transformers import (WEIGHTS_NAME, AdamW, WarmupLinearSchedule,
                                   BertConfig, BertForMaskedLM, BertTokenizer,
@@ -60,22 +63,32 @@ MODEL_CLASSES = {
 
 
 class TextDataset(Dataset):
-    def __init__(self, tokenizer, file_path='train', block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
-        assert os.path.isfile(file_path)
-        directory, filename = os.path.split(file_path)
-        os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
-        cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
+    def __init__(self, tokenizer, datapath, block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
+        # Handling for both a file and a data directory
+        if isfile(datapath):
+            train_files = [datapath]
+            directory, filename = os.path.split(datapath)
+            os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
+            cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
+        else:
+            train_files = [join(datapath, f) for f in listdir(datapath) if isfile(join(datapath, f))]
+            os.makedirs(os.path.join(datapath, 'cache'), exist_ok=True)
+            cached_features_file = os.path.join(datapath, 'cache', 'cached_lm_{}'.format(block_size))
 
+        # Load cached features file is exists
         if os.path.exists(cached_features_file) and not overwrite_cache:
             logger.info("Loading features from cached file %s", cached_features_file)
             with open(cached_features_file, 'rb') as handle:
                 self.examples = pickle.load(handle)
+
+        # Else re-tokenize
         else:
             logger.info("Creating features from dataset file at %s", directory)
-
             self.examples = []
-            with open(file_path, encoding="utf-8") as f:
-                batches = f.readlines()
+            batches = []
+            for file_path in train_files:
+                with open(file_path, encoding="utf-8") as f:
+                    batches.extend(f.readlines())
             self.sep_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|TLDR|>'))
             self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|endoftext|>'))
             self.padding = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|PAD|>'))[0]
@@ -89,6 +102,7 @@ class TextDataset(Dataset):
                 tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
                 tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
             end = time.time()
+            del batches
             logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
 
             if tldr:
@@ -101,7 +115,7 @@ class TextDataset(Dataset):
             else:
                 for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
                     self.examples.append(tokenized_text[i:i + block_size])
-                del tokenized_text  # Delete large variable from memory
+                del tokenized_text
 
             logger.info("Saving features into cached file %s", cached_features_file)
             with open(cached_features_file, 'wb') as handle:
@@ -128,7 +142,7 @@ class TextDataset(Dataset):
         return i+max_idx+len_end, example
 
 def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
-    dataset = TextDataset(tokenizer, file_path=args.eval_data_file if evaluate else args.train_data_file,
+    dataset = TextDataset(tokenizer, args.eval_data_file if evaluate else args.train_data_file,
                           block_size=args.block_size,
                           tldr=args.tldr,
                           num_cores=args.num_cores,
@@ -343,14 +357,14 @@ def evaluate(args, model, tokenizer, prefix=""):
 def main(args):
     parser = argparse.ArgumentParser()
     ## Required parameters
-    parser.add_argument("--train_data_file", default=None, type=str, required=True,
-                        help="The input training data file (a text file).")
+    parser.add_argument("--train_data_path", default=None, type=str, required=True,
+                        help="The input training data file or datadir.")
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
 
     ## Other parameters
-    parser.add_argument("--eval_data_file", default=None, type=str,
-                        help="An optional input evaluation data file to evaluate the perplexity on (a text file).")
+    parser.add_argument("--eval_data_path", default=None, type=str,
+                        help="An optional input evaluation data path (dir or file path) to evaluate the perplexity on.")
 
     parser.add_argument("--model_type", default="bert", type=str,
                         help="The model architecture to be fine-tuned.")
