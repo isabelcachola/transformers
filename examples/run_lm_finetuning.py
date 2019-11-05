@@ -187,7 +187,7 @@ def mask_tokens(inputs, tokenizer, args):
 def train(args, train_dataset, model, tokenizer):
     """ Train the model """
     if args.local_rank in [-1, 0]:
-        tb_writer = SummaryWriter()
+        tb_writer = SummaryWriter(join(args.output_dir, 'tensorboard'))
 
     model.resize_token_embeddings(len(tokenizer))
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
