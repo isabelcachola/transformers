@@ -142,7 +142,7 @@ class TextDataset(Dataset):
         return i+max_idx+len_end, example
 
 def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
-    dataset = TextDataset(tokenizer, args.eval_data_file if evaluate else args.train_data_file,
+    dataset = TextDataset(tokenizer, args.eval_data_path if evaluate else args.train_data_path,
                           block_size=args.block_size,
                           tldr=args.tldr,
                           num_cores=args.num_cores,
@@ -199,6 +199,9 @@ def train(args, train_dataset, model, tokenizer):
         args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
     else:
         t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
+
+    if args.warmup_proportion:
+        args.warmup_steps = int(t_total * args.warmup_proportion)
 
     # Prepare optimizer and schedule (linear warmup and decay)
     no_decay = ['bias', 'LayerNorm.weight']
@@ -275,7 +278,7 @@ def train(args, train_dataset, model, tokenizer):
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     # Log metrics
-                    if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                    if args.local_rank == -1 and args.evaluate_during_training and global_step % args.evaluation_steps == 0:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer)
                         for key, value in results.items():
                             tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
@@ -413,10 +416,14 @@ def main(args):
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
-    parser.add_argument("--warmup_steps", default=0, type=int,
-                        help="Linear warmup over warmup_steps.")
+    parser.add_argument("--warmup_proportion", default=0, type=float,
+                        help="Linear warmup proportion over warmup_steps, overrides num steps.")
+    parser.add_argument("--warmup_steps", default=0, type=float,
+                        help="Linear warmup proportion over warmup_steps.")
 
     parser.add_argument('--logging_steps', type=int, default=50,
+                        help="Log every X updates steps.")
+    parser.add_argument('--evaluation_steps', type=int, default=50,
                         help="Log every X updates steps.")
     parser.add_argument('--save_steps', type=int, default=50,
                         help="Save checkpoint every X updates steps.")
@@ -449,8 +456,8 @@ def main(args):
     if args.model_type in ["bert", "roberta", "distilbert"] and not args.mlm:
         raise ValueError("BERT and RoBERTa do not have LM heads but masked LM heads. They must be run using the --mlm "
                          "flag (masked language modeling).")
-    if args.eval_data_file is None and args.do_eval:
-        raise ValueError("Cannot do evaluation without an evaluation data file. Either supply a file to --eval_data_file "
+    if args.eval_data_path is None and args.do_eval:
+        raise ValueError("Cannot do evaluation without an evaluation data file. Either supply a file to --eval_data_path "
                          "or remove the --do_eval argument.")
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train and not args.overwrite_output_dir:
