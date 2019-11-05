@@ -306,7 +306,7 @@ def train(args, train_dataset, model, tokenizer):
     if args.local_rank in [-1, 0]:
         tb_writer.close()
 
-    return global_step, tr_loss / global_step
+    return global_step, tr_loss / global_step + 1
 
 
 def evaluate(args, model, tokenizer, prefix=""):
