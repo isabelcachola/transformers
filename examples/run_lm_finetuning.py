@@ -63,27 +63,33 @@ MODEL_CLASSES = {
 
 
 class TextDataset(Dataset):
-    def __init__(self, tokenizer, datapath, local_rank, block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
+    def __init__(self, tokenizer, args, datapath):
         # Handling for both a file and a data directory
-        if isfile(datapath):
-            train_files = [datapath]
-            directory, filename = os.path.split(datapath)
+        if isfile(args.datapath):
+            train_files = [args.datapath]
+            directory, filename = os.path.split(args.datapath)
+            if args.data_cache_dir:
+                directory = args.data_cache_dir
             os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
-            cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(block_size, filename))
+            cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(args.block_size, filename))
         else:
-            train_files = [join(datapath, f) for f in listdir(datapath) if isfile(join(datapath, f))]
-            os.makedirs(os.path.join(datapath, 'cache'), exist_ok=True)
-            cached_features_file = os.path.join(datapath, 'cache', 'cached_lm_{}'.format(block_size))
+            if args.data_cache_dir:
+                directory = args.data_cache_dir
+            else:
+                directory = datapath
+            train_files = [join(directory, f) for f in listdir(directory) if isfile(join(directory, f))]
+            os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
+            cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}'.format(args.block_size))
 
         # Load cached features file is exists
-        if os.path.exists(cached_features_file) and not overwrite_cache:
-            logger.info(f"Local Rank {local_rank}: Loading features from cached file {cached_features_file}")
+        if os.path.exists(cached_features_file) and not args.overwrite_cache:
+            logger.info(f"Local Rank {args.local_rank}: Loading features from cached file {cached_features_file}")
             with open(cached_features_file, 'rb') as handle:
                 self.examples = pickle.load(handle)
 
         # Else re-tokenize
         else:
-            logger.info(f"Local Rank {local_rank}: Creating features from dataset file at %s", directory)
+            logger.info(f"Local Rank {args.local_rank}: Creating features from dataset file at %s", directory)
             self.examples = []
             batches = []
             for file_path in train_files:
@@ -93,7 +99,7 @@ class TextDataset(Dataset):
             self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|endoftext|>'))
             self.padding = tokenizer.convert_tokens_to_ids(tokenizer.tokenize('<|PAD|>'))[0]
 
-            if num_cores == -1:
+            if args.num_cores == -1:
                 num_cores = multiprocessing.cpu_count() - 2
 
             start = time.time()
@@ -106,16 +112,16 @@ class TextDataset(Dataset):
             del batches
             logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
 
-            if tldr:
+            if args.tldr:
                 i = 0
-                while i < len(tokenized_text)-block_size+1:
-                    example = tokenized_text[i:i+block_size]
+                while i < len(tokenized_text)-args.block_size+1:
+                    example = tokenized_text[i:i+args.block_size]
                     i, example = self._truncate_example(i, example)
-                    i += block_size
+                    i += args.block_size
                     self.examples.append(example)
             else:
-                for i in tqdm(range(0, len(tokenized_text) - block_size + 1, block_size)):  # Truncate in block of block_size
-                    self.examples.append(tokenized_text[i:i + block_size])
+                for i in tqdm(range(0, len(tokenized_text) - args.block_size + 1, args.block_size)):  # Truncate in block of block_size
+                    self.examples.append(tokenized_text[i:i + args.block_size])
                 del tokenized_text
 
             logger.info("Saving features into cached file %s", cached_features_file)
@@ -142,13 +148,8 @@ class TextDataset(Dataset):
 
         return i+max_idx+len_end, example
 
-def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
-    dataset = TextDataset(tokenizer, args.eval_data_path if evaluate else args.train_data_path,
-                          args.local_rank,
-                          block_size=args.block_size,
-                          tldr=args.tldr,
-                          num_cores=args.num_cores,
-                          overwrite_cache=args.overwrite_cache)
+def load_and_cache_examples(args, tokenizer, evaluate=False):
+    dataset = TextDataset(tokenizer, args, args.eval_data_path if evaluate else args.train_data_path)
 
     # Ignore incomplete batches
     # If you don't do this, you'll get an error at the end of training
@@ -433,6 +434,7 @@ def main(args):
                         help="Evaluate all checkpoints starting with the same prefix as model_name_or_path ending and ending with step number")
     parser.add_argument("--no_cuda", action='store_true',
                         help="Avoid using CUDA when available")
+    parser.add_argument('--data_cache_dir', help="dir to save cache")
     parser.add_argument('--overwrite_output_dir', action='store_true', default=False,
                         help="Overwrite the content of the output directory")
     parser.add_argument('--overwrite_cache', action='store_true',
