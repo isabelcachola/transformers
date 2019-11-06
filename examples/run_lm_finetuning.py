@@ -65,9 +65,9 @@ MODEL_CLASSES = {
 class TextDataset(Dataset):
     def __init__(self, tokenizer, args, datapath):
         # Handling for both a file and a data directory
-        if isfile(args.datapath):
-            train_files = [args.datapath]
-            directory, filename = os.path.split(args.datapath)
+        if isfile(datapath):
+            train_files = [datapath]
+            directory, filename = os.path.split(datapath)
             if args.data_cache_dir:
                 directory = args.data_cache_dir
             os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
