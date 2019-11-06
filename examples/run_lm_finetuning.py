@@ -63,7 +63,7 @@ MODEL_CLASSES = {
 
 
 class TextDataset(Dataset):
-    def __init__(self, tokenizer, datapath, block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
+    def __init__(self, tokenizer, datapath, local_rank, block_size=512, tldr=False, num_cores=-1, overwrite_cache=False):
         # Handling for both a file and a data directory
         if isfile(datapath):
             train_files = [datapath]
@@ -77,13 +77,13 @@ class TextDataset(Dataset):
 
         # Load cached features file is exists
         if os.path.exists(cached_features_file) and not overwrite_cache:
-            logger.info("Loading features from cached file %s", cached_features_file)
+            logger.info(f"Local Rank {local_rank}: Loading features from cached file {cached_features_file}")
             with open(cached_features_file, 'rb') as handle:
                 self.examples = pickle.load(handle)
 
         # Else re-tokenize
         else:
-            logger.info("Creating features from dataset file at %s", directory)
+            logger.info(f"Local Rank {local_rank}: Creating features from dataset file at %s", directory)
             self.examples = []
             batches = []
             for file_path in train_files:
@@ -102,6 +102,7 @@ class TextDataset(Dataset):
                 tokenized_text = mp.map(tokenizer.convert_tokens_to_ids, tokenized_text)
                 tokenized_text = list(itertools.chain.from_iterable(tokenized_text))
             end = time.time()
+            
             del batches
             logging.info('Time to tokenize text: {} min'.format((end - start) / 60))
 
@@ -143,6 +144,7 @@ class TextDataset(Dataset):
 
 def load_and_cache_examples(args, tokenizer, evaluate=False, tldr=False):
     dataset = TextDataset(tokenizer, args.eval_data_path if evaluate else args.train_data_path,
+                          args.local_rank,
                           block_size=args.block_size,
                           tldr=args.tldr,
                           num_cores=args.num_cores,
@@ -513,14 +515,16 @@ def main(args):
 
     # Training
     if args.do_train:
-        if args.local_rank not in [-1, 0]:
-            torch.distributed.barrier()  # Barrier to make sure only the first process in distributed training process the dataset, and the others will use the cache
-        # print('HERE1')
-        train_dataset = load_and_cache_examples(args, tokenizer, evaluate=False)
-        # print('HERE2')
+        if args.local_rank in [-1, 0]:
+            train_dataset = load_and_cache_examples(args, tokenizer, evaluate=False)
+        else:
+            train_dataset = None
 
-        if args.local_rank == 0:
+        if args.local_rank != -1:
             torch.distributed.barrier()
+
+        if args.local_rank not in [-1, 0]:
+            train_dataset = load_and_cache_examples(args, tokenizer, evaluate=False)
 
         global_step, tr_loss = train(args, train_dataset, model, tokenizer)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
