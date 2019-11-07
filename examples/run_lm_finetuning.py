@@ -249,7 +249,6 @@ def train(args, train_dataset, model, tokenizer):
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            # print(batch.shape)
             inputs, labels = mask_tokens(batch, tokenizer, args) if args.mlm else (batch, batch)
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
@@ -279,15 +278,18 @@ def train(args, train_dataset, model, tokenizer):
                 model.zero_grad()
                 global_step += 1
 
+                # Log metrics
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    # Log metrics
-                    if args.local_rank == -1 and args.evaluate_during_training and global_step % args.evaluation_steps == 0:  # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
-                        for key, value in results.items():
-                            tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
                     tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
                     tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, global_step)
                     logging_loss = tr_loss
+                # Log evaluation
+                if args.local_rank in [-1, 0] and \
+                        args.evaluate_during_training and \
+                        global_step % args.evaluation_steps == 0:
+                    results = evaluate(args, model, tokenizer)
+                    for key, value in results.items():
+                        tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -309,7 +311,7 @@ def train(args, train_dataset, model, tokenizer):
     if args.local_rank in [-1, 0]:
         tb_writer.close()
 
-    return global_step, tr_loss / (global_step + 1)
+    return global_step, tr_loss / global_step
 
 
 def evaluate(args, model, tokenizer, prefix=""):
@@ -347,7 +349,8 @@ def evaluate(args, model, tokenizer, prefix=""):
     perplexity = torch.exp(torch.tensor(eval_loss))
 
     result = {
-        "perplexity": perplexity
+        "perplexity": perplexity,
+        "loss": eval_loss
     }
 
     output_eval_file = os.path.join(eval_output_dir, "eval_results.txt")
