@@ -70,16 +70,16 @@ class TextDataset(Dataset):
             directory, filename = os.path.split(datapath)
             if args.data_cache_dir:
                 directory = args.data_cache_dir
-            os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
-            cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}_{}'.format(args.block_size, filename))
+            os.makedirs(os.path.join(directory), exist_ok=True)
+            cached_features_file = os.path.join(directory, 'cached_lm_{}_{}'.format(args.block_size, filename))
         else:
             if args.data_cache_dir:
                 directory = args.data_cache_dir
             else:
                 directory = datapath
             train_files = [join(directory, f) for f in listdir(directory) if isfile(join(directory, f))]
-            os.makedirs(os.path.join(directory, 'cache'), exist_ok=True)
-            cached_features_file = os.path.join(directory, 'cache', 'cached_lm_{}'.format(args.block_size))
+            os.makedirs(os.path.join(directory), exist_ok=True)
+            cached_features_file = os.path.join(directory, 'cached_lm_{}'.format(args.block_size))
 
         # Load cached features file is exists
         if os.path.exists(cached_features_file) and not args.overwrite_cache:
