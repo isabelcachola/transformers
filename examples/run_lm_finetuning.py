@@ -268,7 +268,7 @@ def train(args, train_dataset, model, tokenizer):
                 loss.backward()
 
             tr_loss += loss.item()
-            if (step + 1) % args.gradient_accumulation_steps == 0:
+            if step % args.gradient_accumulation_steps == 0 and step != 0:
                 if args.fp16:
                     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
                 else:
@@ -284,12 +284,13 @@ def train(args, train_dataset, model, tokenizer):
                     tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, global_step)
                     logging_loss = tr_loss
                 # Log evaluation
-                if args.local_rank in [-1, 0] and \
-                        args.evaluate_during_training and \
+              
+                if args.evaluate_during_training and \
                         global_step % args.evaluation_steps == 0:
                     results = evaluate(args, model, tokenizer)
-                    for key, value in results.items():
-                        tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
+                    if args.local_rank in [-1, 0]:
+                        for key, value in results.items():
+                            tb_writer.add_scalar('eval_{}'.format(key), value, global_step)
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -317,6 +318,7 @@ def train(args, train_dataset, model, tokenizer):
 def evaluate(args, model, tokenizer, prefix=""):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
     eval_output_dir = args.output_dir
+    max_steps = args.max_eval_steps
 
     eval_dataset = load_and_cache_examples(args, tokenizer, evaluate=True)
 
@@ -324,10 +326,14 @@ def evaluate(args, model, tokenizer, prefix=""):
         os.makedirs(eval_output_dir)
 
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+    
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    n_eval = len(eval_dataloader.dataset)
 
+    if max_steps > 0:
+        n_eval = min(max_steps, n_eval)
     # Eval!
     logger.info("***** Running evaluation {} *****".format(prefix))
     logger.info("  Num examples = %d", len(eval_dataset))
@@ -335,17 +341,30 @@ def evaluate(args, model, tokenizer, prefix=""):
     eval_loss = 0.0
     nb_eval_steps = 0
     model.eval()
-
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
+    
+    if args.local_rank in [-1, 0]:
+        iterator = enumerate(tqdm(eval_dataloader, desc=f"Rank {args.local_rank}: Evaluating", total=n_eval))
+        
+    else:
+        iterator = enumerate(eval_dataloader)
+        
+    for idx, batch in iterator:
         batch = batch.to(args.device)
-
+        if idx == max_steps:
+            break
         with torch.no_grad():
             outputs = model(batch, masked_lm_labels=batch) if args.mlm else model(batch, labels=batch)
             lm_loss = outputs[0]
             eval_loss += lm_loss.mean().item()
         nb_eval_steps += 1
-
     eval_loss = eval_loss / nb_eval_steps
+
+#     if args.local_rank != -1:
+#         total_loss = eval_loss.new_zeros(1) + total_loss
+#         torch.distributed.all_reduce(total_loss, op=torch.distributed.reduce_op.SUM)
+#         total_loss = total_loss.item()
+#         eval_loss = total_loss / torch.distributed.get_world_size()
+
     perplexity = torch.exp(torch.tensor(eval_loss))
 
     result = {
@@ -359,7 +378,7 @@ def evaluate(args, model, tokenizer, prefix=""):
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
             writer.write("%s = %s\n" % (key, str(result[key])))
-
+    
     return result
 
 
@@ -422,6 +441,7 @@ def main(args):
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
+    parser.add_argument("--max_eval_steps", default=-1, type=int, help="Max number of steps in eval")
     parser.add_argument("--warmup_proportion", default=0, type=float,
                         help="Linear warmup proportion over warmup_steps, overrides num steps.")
     parser.add_argument("--warmup_steps", default=0, type=float,
