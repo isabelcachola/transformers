@@ -338,7 +338,7 @@ def evaluate(args, model, tokenizer, prefix=""):
     logger.info("***** Running evaluation {} *****".format(prefix))
     logger.info("  Num examples = %d", len(eval_dataset))
     logger.info("  Batch size = %d", args.eval_batch_size)
-    eval_loss = torch.Tensor(0.0)
+    eval_loss = torch.Tensor([0.0])
     nb_eval_steps = 0
     model.eval()
 
