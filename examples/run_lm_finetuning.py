@@ -341,12 +341,9 @@ def evaluate(args, model, tokenizer, prefix=""):
     eval_loss = 0.0
     nb_eval_steps = 0
     model.eval()
-    
-    if args.local_rank in [-1, 0]:
-        iterator = enumerate(tqdm(eval_dataloader, desc=f"Rank {args.local_rank}: Evaluating", total=n_eval))
-        
-    else:
-        iterator = enumerate(eval_dataloader)
+
+    iterator = enumerate(tqdm(eval_dataloader, desc=f"Rank {args.local_rank}: Evaluating", total=n_eval)) \
+        if args.local_rank in [-1, 0] else enumerate(eval_dataloader)
         
     for idx, batch in iterator:
         batch = batch.to(args.device)
@@ -359,11 +356,11 @@ def evaluate(args, model, tokenizer, prefix=""):
         nb_eval_steps += 1
     eval_loss = eval_loss / nb_eval_steps
 
-#     if args.local_rank != -1:
-#         total_loss = eval_loss.new_zeros(1) + total_loss
-#         torch.distributed.all_reduce(total_loss, op=torch.distributed.reduce_op.SUM)
-#         total_loss = total_loss.item()
-#         eval_loss = total_loss / torch.distributed.get_world_size()
+    if args.local_rank != -1:
+        total_loss = eval_loss.new_zeros(1) + total_loss
+        torch.distributed.all_reduce(total_loss, op=torch.distributed.reduce_op.SUM)
+        total_loss = total_loss.item()
+        eval_loss = total_loss / torch.distributed.get_world_size()
 
     perplexity = torch.exp(torch.tensor(eval_loss))
 
