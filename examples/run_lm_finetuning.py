@@ -338,7 +338,7 @@ def evaluate(args, model, tokenizer, prefix=""):
     logger.info("***** Running evaluation {} *****".format(prefix))
     logger.info("  Num examples = %d", len(eval_dataset))
     logger.info("  Batch size = %d", args.eval_batch_size)
-    eval_loss = 0.0
+    eval_loss = torch.Tensor(0.0)
     nb_eval_steps = 0
     model.eval()
 
@@ -352,15 +352,13 @@ def evaluate(args, model, tokenizer, prefix=""):
         with torch.no_grad():
             outputs = model(batch, masked_lm_labels=batch) if args.mlm else model(batch, labels=batch)
             lm_loss = outputs[0]
-            eval_loss += lm_loss.mean().item()
+            eval_loss += lm_loss.mean()
         nb_eval_steps += 1
     eval_loss = eval_loss / nb_eval_steps
 
     if args.local_rank != -1:
-        total_loss = eval_loss.new_zeros(1) + total_loss
-        torch.distributed.all_reduce(total_loss, op=torch.distributed.reduce_op.SUM)
-        total_loss = total_loss.item()
-        eval_loss = total_loss / torch.distributed.get_world_size()
+        torch.distributed.all_reduce(eval_loss, op=torch.distributed.reduce_op.SUM)
+        eval_loss = eval_loss.item() / torch.distributed.get_world_size()
 
     perplexity = torch.exp(torch.tensor(eval_loss))
 
