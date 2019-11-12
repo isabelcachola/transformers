@@ -148,8 +148,11 @@ class TextDataset(Dataset):
 
         return i+max_idx+len_end, example
 
-def load_and_cache_examples(args, tokenizer, evaluate=False):
-    dataset = TextDataset(tokenizer, args, args.eval_data_path if evaluate else args.train_data_path)
+def load_and_cache_examples(args, tokenizer, evaluate=False, fpath=None):
+    if fpath:
+        dataset = TextDataset(tokenizer, args, fpath)
+    else:
+        dataset = TextDataset(tokenizer, args, args.eval_data_path if evaluate else args.train_data_path)
 
     # Ignore incomplete batches
     # If you don't do this, you'll get an error at the end of training
@@ -471,6 +474,7 @@ def main(args):
 
     parser.add_argument('--tldr', action='store_true', default=False, help='For tldr task')
     parser.add_argument('--num_cores', default=-1, type=int, help='Num CPUs for data processing')
+    parser.add_argument('--run_caching', action='append', default=[])
 
     args = parser.parse_args(args)
 
@@ -531,6 +535,11 @@ def main(args):
         torch.distributed.barrier()  # End of barrier to make sure only the first process in distributed training download model & vocab
 
     logger.info("Training/evaluation parameters %s", args)
+
+    # Caching
+    if args.run_caching:
+        for f in args.run_caching:
+            load_and_cache_examples(args, tokenizer, fpath=f)
 
     # Training
     if args.do_train:
