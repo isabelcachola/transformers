@@ -342,24 +342,32 @@ def evaluate(args, model, tokenizer, prefix=""):
     nb_eval_steps = 0
     model.eval()
 
-    iterator = enumerate(tqdm(eval_dataloader, desc=f"Rank {args.local_rank}: Evaluating", total=n_eval)) \
+    iterator = enumerate(tqdm(eval_dataloader, desc=f"Evaluating", total=n_eval)) \
         if args.local_rank in [-1, 0] else enumerate(eval_dataloader)
         
     for idx, batch in iterator:
+        print('here1')
         batch = batch.to(args.device)
         if idx == max_steps:
             break
+        print('here2')
         with torch.no_grad():
+            print('here3')
             outputs = model(batch, masked_lm_labels=batch) if args.mlm else model(batch, labels=batch)
+            print('here4')
             lm_loss = outputs[0]
+            print('here5')
             eval_loss += lm_loss.mean()
         nb_eval_steps += 1
+    print('here6')
     eval_loss = eval_loss / nb_eval_steps
 
+    print('here7')
     if args.local_rank != -1:
-        torch.distributed.all_reduce(eval_loss, op=torch.distributed.reduce_op.SUM)
+        torch.distributed.all_reduce(eval_loss, op=torch.distributed.reduceOp.SUM)
         eval_loss = eval_loss.item() / torch.distributed.get_world_size()
 
+    print('here8')
     perplexity = torch.exp(torch.tensor(eval_loss))
 
     result = {
@@ -367,13 +375,15 @@ def evaluate(args, model, tokenizer, prefix=""):
         "loss": eval_loss
     }
 
+    print('here9')
     output_eval_file = os.path.join(eval_output_dir, "eval_results.txt")
     with open(output_eval_file, "w") as writer:
         logger.info("***** Eval results {} *****".format(prefix))
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
             writer.write("%s = %s\n" % (key, str(result[key])))
-    
+
+    print('here10')
     return result
 
 
