@@ -364,7 +364,7 @@ def evaluate(args, model, tokenizer, prefix=""):
 
     print('here7')
     if args.local_rank != -1:
-        torch.distributed.all_reduce(eval_loss, op=torch.distributed.reduceOp.SUM)
+        torch.distributed.all_reduce(eval_loss, op=torch.distributed.reduce_op.SUM)
         eval_loss = eval_loss.item() / torch.distributed.get_world_size()
 
     print('here8')
