@@ -199,23 +199,8 @@ def mask_tokens(inputs, tokenizer, args):
     return inputs, labels
 
 
-def check_memory(desc=""):
-    from memory_profiler import profile
-    import gc
-    count = 0    
-    for obj in gc.get_objects():
-        try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                # print(type(obj), obj.size())
-                count += 1
-        except:
-            pass
-    print(f'{desc}: {count} tensors in memory')
-
 def train(args, train_dataset, model, tokenizer):
     """ Train the model """
-    #check_memory(desc="Beginning of training")
-
     if args.local_rank in [-1, 0]:
         tb_writer = SummaryWriter(join(args.output_dir, 'tensorboard'))
 
@@ -257,9 +242,6 @@ def train(args, train_dataset, model, tokenizer):
                 train_dataset = train_dataset[init_step:]
             else:
                 logger.warning('optimizer state not found.')
-    
-    print(init_epoch, init_step, global_step)
-    print(tr_loss, logging_loss)
 
     if args.fp16:
         try:
@@ -289,8 +271,10 @@ def train(args, train_dataset, model, tokenizer):
     logger.info("  Total optimization steps = %d", t_total)
 
     model.zero_grad()
+
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0], initial=init_epoch)
     set_seed(args)  # Added here for reproducibility (even between python 2 and 3)
+    
     for epoch_idx in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0], initial=step)
         for step, batch in enumerate(epoch_iterator):
@@ -362,15 +346,12 @@ def train(args, train_dataset, model, tokenizer):
 
     return global_step, tr_loss / global_step
 
-# @profile(precision=4)
 def evaluate(args, model, tokenizer, prefix=""):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
     eval_output_dir = args.output_dir
     max_steps = args.max_eval_steps
 
-    #check_memory(desc="Before load eval dataset")
     eval_dataset = load_and_cache_examples(args, tokenizer, evaluate=True)
-    #check_memory(desc="After load eval dataset")
 
     if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
         os.makedirs(eval_output_dir)
@@ -381,10 +362,6 @@ def evaluate(args, model, tokenizer, prefix=""):
     eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
     n_eval = len(eval_dataloader.dataset)
-
-    # if max_steps > 0:
-    #     n_eval = min(max_steps, n_eval)
-    #     # eval_dataset = eval_dataset[:n_eval]
     
     # Eval!
     logger.info("***** Running evaluation {} *****".format(prefix))
@@ -397,7 +374,6 @@ def evaluate(args, model, tokenizer, prefix=""):
     iterator = enumerate(tqdm(eval_dataloader, desc=f"Evaluating", total=n_eval)) \
         if args.local_rank in [-1, 0] else enumerate(eval_dataloader)
     
-    #check_memory(desc="Before running eval steps")
     for idx, batch in iterator:
         batch = batch.to(args.device)
         with torch.no_grad():
@@ -407,16 +383,11 @@ def evaluate(args, model, tokenizer, prefix=""):
             nb_eval_steps += 1
     eval_loss = eval_loss / nb_eval_steps
 
-    #check_memory(desc="After running eval steps")
-
     if args.local_rank == -1:
         eval_loss = eval_loss.item()
     else:
         torch.distributed.all_reduce(eval_loss, op=torch.distributed.reduce_op.SUM)
         eval_loss = eval_loss.item() / torch.distributed.get_world_size()
-
-
-    #check_memory(desc="After distr")
 
     perplexity = torch.exp(torch.tensor(eval_loss)).item()
 
@@ -538,8 +509,6 @@ def main(args):
     parser.add_argument('--run_caching', action='append', default=[])
 
     args = parser.parse_args(args)
-
-    #check_memory(desc="Very Beginning")
 
     if args.model_type in ["bert", "roberta", "distilbert"] and not args.mlm:
         raise ValueError("BERT and RoBERTa do not have LM heads but masked LM heads. They must be run using the --mlm "
