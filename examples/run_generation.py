@@ -32,7 +32,9 @@ from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from transformers import OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
 from transformers import XLNetLMHeadModel, XLNetTokenizer
 from transformers import TransfoXLLMHeadModel, TransfoXLTokenizer
-
+import rouge
+import json
+import os
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -105,11 +107,13 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')
 
 def sample_sequence(model, length, context, num_samples=1, temperature=1, top_k=0, top_p=0.0, is_xlnet=False, device='cpu'):
     context = torch.tensor(context, dtype=torch.long, device=device)
+    # print('here-a')
     context = context.unsqueeze(0).repeat(num_samples, 1)
+    # print('here-b')
     generated = context
     with torch.no_grad():
         for _ in range(length):
-
+            # print('here-c')
             inputs = {'input_ids': generated}
             if is_xlnet:
                 # XLNet is a direct (predict same token, not next token) and bi-directional model by default
@@ -120,8 +124,9 @@ def sample_sequence(model, length, context, num_samples=1, temperature=1, top_k=
                 target_mapping = torch.zeros((1, 1, input_ids.shape[1]), dtype=torch.float, device=device)
                 target_mapping[0, 0, -1] = 1.0  # predict last token
                 inputs = {'input_ids': input_ids, 'perm_mask': perm_mask, 'target_mapping': target_mapping}
-
+            # print(inputs['input_ids'].shape)
             outputs = model(**inputs)  # Note: we could also use 'past' with GPT-2/Transfo-XL/XLNet (cached hidden-states)
+            # print('here-d')
             next_token_logits = outputs[0][0, -1, :] / temperature
             filtered_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
             next_token = torch.multinomial(F.softmax(filtered_logits, dim=-1), num_samples=1)
@@ -139,24 +144,6 @@ def predict(inputs, configs):
     top_p = configs['top_p']
     seed = configs['seed']
 
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--model_type", default='gpt2', type=str,
-    #                     help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
-    # parser.add_argument("--model_name_or_path", default='gpt2', type=str,
-    #                     help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
-    # parser.add_argument("--prompt", type=str, default="")
-    # parser.add_argument("--padding_text", type=str, default="")
-    # parser.add_argument("--length", type=int, default=20)
-    # parser.add_argument("--temperature", type=float, default=1.0)
-    # parser.add_argument("--top_k", type=int, default=0)
-    # parser.add_argument("--top_p", type=float, default=0.9)
-    # parser.add_argument("--no_cuda", action='store_true',
-    #                     help="Avoid using CUDA when available")
-    # parser.add_argument('--seed', type=int, default=42,
-    #                     help="random seed for initialization")
-    # args = parser.parse_args()
-
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     global n_gpu
     n_gpu = torch.cuda.device_count()
@@ -168,6 +155,7 @@ def predict(inputs, configs):
     model_class, tokenizer_class = MODEL_CLASSES[model_type]
     tokenizer = tokenizer_class.from_pretrained(model_name_or_path)
     model = model_class.from_pretrained(model_name_or_path)
+    # model = model_class.from_pretrained('models/tldr-aic/checkpoint-1000')
     model.to(device)
     model.eval()
 
@@ -187,7 +175,10 @@ def predict(inputs, configs):
         if model_type in ["transfo-xl", "xlnet"]:
             # Models with memory likes to have a long prompt for short inputs.
             raw_text = (padding_text if padding_text else PADDING_TEXT) + raw_text
-        context_tokens = tokenizer.encode(raw_text)
+        # print('here1')
+        import ipdb; ipdb.set_trace()
+        context_tokens = tokenizer.encode(raw_text).to(device)
+        # print('here2')
         out = sample_sequence(
             model=model,
             context=context_tokens,
@@ -200,22 +191,142 @@ def predict(inputs, configs):
         )
         out = out[0, len(context_tokens):].tolist()
         text = tokenizer.decode(out, clean_up_tokenization_spaces=True)
-        # print(text)
+        # print('here3')
         preds.append(text)
 
     return preds
+def test_rouge(cand, ref, temp_dir='./tmp'):
+    if type(cand)==str and type(ref)==str:
+        candidates = [line.strip() for line in open(cand, encoding='utf-8')]
+        references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
+    elif type(cand)==list and type(ref)==list:
+        candidates = cand
+        references = ref
+    else:
+        raise TypeError
+
+    assert len(candidates) == len(references), f'{temp_dir}: len cand {len(candidates)} len ref {len(references)}'
+
+    cnt = len(candidates)
+    evaluator = rouge.Rouge()
+
+    all_scores = []
+
+    for cand_idx, cand in enumerate(candidates):
+        curr_targets = references[cand_idx]
+        curr_scores = []
+        for tgt in curr_targets:
+            r = evaluator.get_scores(cand, tgt)
+            curr_scores += r
+        # Take the max of curr scores
+        max_rouge = 0.
+        max_idx = 0
+        for score_idx, s in enumerate(curr_scores):
+            if s['rouge-1']['f'] > max_rouge:
+                max_rouge = s['rouge-1']['f']
+                max_idx = score_idx
+        all_scores.append(curr_scores[max_idx])
+    
+    # Average across all scores
+    avg_scores = {"rouge-1": {
+                    "f": [],
+                    "p": [],
+                    "r":[]
+                    },
+                "rouge-2": {
+                    "f": [],
+                    "p": [],
+                    "r": []
+                    },
+                "rouge-l": {
+                    "f": [],
+                    "p": [],
+                    "r": []
+                    }
+                }
+    for score in all_scores:
+        for r_type in score.keys():
+            for m_type in score[r_type].keys():
+                x = score[r_type][m_type]
+                avg_scores[r_type][m_type].append(x)
+
+    for r_type in avg_scores.keys():
+        for m_type in avg_scores[r_type].keys():
+            x = avg_scores[r_type][m_type]
+            avg_scores[r_type][m_type] = np.mean(x)
+
+    return avg_scores
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('input_file')
+    parser.add_argument('results_file')
+    parser.add_argument("--model_type", default='gpt2', type=str,
+                        help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
+    parser.add_argument("--model_name_or_path", default='gpt2', type=str,
+                        help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
+    # parser.add_argument("--prompt", type=str, default="")
+    parser.add_argument("--padding_text", type=str, default='<|PAD|>')
+    parser.add_argument("--pred_seed", type=str, default='')
+    parser.add_argument("--sep_token", type=str, default='<|TLDR|>')
+    parser.add_argument("--end_token", type=str, default='<|endoftext|>')
+    parser.add_argument("--length", type=int, default=30)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top_k", type=int, default=0)
+    parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--no_cuda", action='store_true',
+                        help="Avoid using CUDA when available")
+    parser.add_argument('--seed', type=int, default=42,
+                        help="random seed for initialization")
+    parser.add_argument('--multitarget', action='store_true', default=False)
+    args = parser.parse_args()
     configs = {
-        'model_type': 'gpt2',
-        'model_name_or_path': '/home/isabelc/tldr/models/transformers/trained_models/lm_finetuned_silver/',
-        'padding_text': '<|PAD|>',
-        'length': 20,
-        'temperature': 1.0,
-        'top_k': 0,
-        'top_p': 0.9,
-        'seed': 42
+        'model_type': args.model_type,
+        'model_name_or_path': args.model_name_or_path,
+        'padding_text': args.padding_text,
+        'length': args.length,
+        'temperature': args.temperature,
+        'top_k': args.top_k,
+        'top_p': args.top_p,
+        'seed': args.seed
     }
     sources = ['We propose', 'We suggest']
-    preds = predict(sources, configs)
-    print(preds)
+    with open(args.input_file, encoding='utf-8') as f:
+        lines = f.readlines()
+        logging.info('Predicting GPT2...')
+        if args.multitarget:
+            sources = [line.strip() for line in lines if line != '\n']
+            target_fname = args.input_file.replace('source', 'target')
+            assert os.path.exists(target_fname), f'{target_fname} does not exist.'
+            target_f = open(target_fname).readlines()
+            targets = [eval(line.strip()) for line in target_f]
+        else:
+            data = [line.strip().split(args.sep_token) for line in lines if line != '\n']
+            sources, targets = [], []
+            for d in data:
+                if len(d) == 2:
+                    sources.append((d[0] + args.sep_token).strip() + f' {args.pred_seed}')
+                    targets.append([d[1][:-13]])
+
+
+        predictions = predict(sources, configs)
+
+        for i in range(len(predictions)):
+            if args.padding_text in predictions[i]:
+                predictions[i] = predictions[i][:predictions[i].index(args.padding_text)]
+            if args.sep_token in predictions[i]:
+                predictions[i] = predictions[i][predictions[i].index(args.sep_token)+len(args.sep_token)-1:]
+            if args.end_token in predictions[i]:
+                predictions[i] = predictions[i][:predictions[i].index(args.end_token)]
+
+        rouge_scores = test_rouge(predictions, targets)
+
+        j = json.dumps(rouge_scores, indent=4) + '\n'
+        print(j)
+        with open(args.results_file, 'w') as f_out:
+            f_out.write(j)
+            for src, pred, tgt in zip(sources, predictions, targets):
+                f_out.write('input:  {}\n'.format(src))
+                f_out.write('prediction:  {}\n'.format(pred))
+                f_out.write('target:  {}\n\n'.format(tgt[0]))
+
