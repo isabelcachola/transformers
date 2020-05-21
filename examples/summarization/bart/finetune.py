@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from lightning_base import BaseTransformer, add_generic_args, generic_train, get_linear_schedule_with_warmup
-
+from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 try:
     from .utils import SummarizationDataset
@@ -159,8 +159,41 @@ class SummarizationTrainer(BaseTransformer):
             required=False,
             help="The directory for tensorboard_logs",
         )
+        parser.add_argument(
+            "--visible_gpus",
+            type=str
+        )
+        parser.add_argument(
+            "--test_fname",
+            default='test.hypo',
+            type=str
+        )
+
         return parser
 
+    def text_predictions(self, batch):
+        dct = self.tokenizer.batch_encode_plus(batch, max_length=1024, return_tensors="pt", pad_to_max_length=True)
+        generated_ids = self.model.generate(
+            input_ids=dct["input_ids"].to(self.device),
+            attention_mask=dct["attention_mask"].to(self.device),
+            max_length=30,
+            repetition_penalty=2.5,
+            length_penalty=1.0,
+            num_beams=6,
+            early_stopping=True,
+            # decoder_start_token_id=self.tokenizer.encode('We')[0]
+            decoder_start_token_id=self.model.config.eos_token_id
+        )
+        preds = [
+            self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            for g in generated_ids
+        ]
+        return preds
+
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i : i + n]
 
 def main(args):
 
@@ -169,6 +202,9 @@ def main(args):
         args.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
         os.makedirs(args.output_dir)
     model = SummarizationTrainer(args)
+    print('HERE')
+    print(model.tokenizer._extra_ids)
+    # print(SummarizationTrainer.tokenizer._extra_ids)
     trainer = generic_train(model, args)
 
     # Optionally, predict on dev set and write to output_dir
@@ -177,15 +213,27 @@ def main(args):
         # pl use this format to create a checkpoint:
         # https://github.com/PyTorchLightning/pytorch-lightning/blob/master\
         # /pytorch_lightning/callbacks/model_checkpoint.py#L169
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        input_path = os.path.join(args.data_dir, 'test.source')
+        source_lns = [x.rstrip() for x in open(input_path).readlines()]
+        # inputs = model.tokenizer.batch_encode_plus(source_lns, max_length=1024, return_tensors='pt', pad_to_max_length=True)['input_ids'].to(device)
+        example_batches = chunks(source_lns, args.eval_batch_size)
         checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
-        model = model.load_from_checkpoint(checkpoints[-1])
-        trainer.test(model)
-
+        model = model.load_from_checkpoint(checkpoints[-1]).to(device)
+        model.device = device
+        model.eval()
+        model.freeze()
+        outputs = []
+        for example in example_batches:
+            outputs += (model.text_predictions(example))
+        with open(os.path.join(args.output_dir, args.test_fname), 'w') as fout:
+            fout.write('\n'.join(outputs))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     add_generic_args(parser, os.getcwd())
     parser = SummarizationTrainer.add_model_specific_args(parser, os.getcwd())
+    
     args = parser.parse_args()
 
     main(args)
