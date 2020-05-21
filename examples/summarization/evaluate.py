@@ -130,8 +130,11 @@ def chunks(lst, n):
 def generate_summaries(lns, output_file_path, model_name_or_path, batch_size, device):
     output_file = Path(output_file_path).open("w")
 
+    print('loading model...')
     ckpt = torch.load(model_name_or_path)
+    print('\tt5')
     model = T5ForConditionalGeneration.from_pretrained('t5-large')
+    print('\tstate dict')
     model.load_state_dict(ckpt['state_dict'], strict=False)
     model.to(device)
 
@@ -145,11 +148,13 @@ def generate_summaries(lns, output_file_path, model_name_or_path, batch_size, de
     for batch in tqdm(list(chunks(lns, batch_size))):
         batch = [model.config.prefix + text for text in batch]
 
-        dct = tokenizer.batch_encode_plus(batch, max_length=512, return_tensors="pt", pad_to_max_length=True)
+        dct = tokenizer.batch_encode_plus(batch, max_length=1024, return_tensors="pt", pad_to_max_length=True)
         input_ids = dct["input_ids"].to(device)
         attention_mask = dct["attention_mask"].to(device)
 
-        summaries = model.generate(input_ids=input_ids, attention_mask=attention_mask)
+        summaries = model.generate(input_ids=input_ids, attention_mask=attention_mask,
+                                    max_length=30, num_beams=4, max_length=30, length_penalty=0.2, 
+                                    min_length=5, early_stopping=True)
         dec = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
 
         for hypothesis in dec:
@@ -186,10 +191,14 @@ def run_generate():
         "--multitarget", default=False, action='store_true'
     )
 
+
+
     args = parser.parse_args()
     args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
 
-    args.output_path = join(args.data_dir, args.test_fname)
+    dir_path = outdir = '/'.join(args.model_name_or_path.split('/')[:-2])
+    args.output_path = join(dir_path, args.test_fname)
+
     if args.multitarget:
         args.reference_path = 'test-multitarget.jsonl'
     elif not args.quick:
