@@ -15,6 +15,10 @@ try:
 except ImportError:
     from utils import SummarizationDataset
 
+import files2rouge
+from tqdm import tqdm 
+import re
+from pprint import pprint
 
 logger = logging.getLogger(__name__)
 
@@ -168,21 +172,41 @@ class SummarizationTrainer(BaseTransformer):
             default='test.hypo',
             type=str
         )
+        parser.add_argument(
+            "--ref_path",
+            type=str
+        )
 
+        parser.add_argument(
+            "--lenpen",
+            type=float,
+            default=1.0
+        )
+        parser.add_argument(
+            "--num_beams",
+            type=int,
+            default=6
+        )
+        parser.add_argument(
+            "--tune_decoder",
+            action='store_true'
+            default=False
+        )
         return parser
 
-    def text_predictions(self, batch):
-        dct = self.tokenizer.batch_encode_plus(batch, max_length=1024, return_tensors="pt", pad_to_max_length=True)
+    def text_predictions(self, batch, device, args):
+        dct = self.tokenizer.batch_encode_plus(batch, max_length=args.max_source_length, return_tensors="pt", pad_to_max_length=True)
         generated_ids = self.model.generate(
-            input_ids=dct["input_ids"].to(self.device),
-            attention_mask=dct["attention_mask"].to(self.device),
+            input_ids=dct["input_ids"].to(device),
+            attention_mask=dct["attention_mask"].to(device),
             max_length=30,
             repetition_penalty=2.5,
-            length_penalty=1.0,
-            num_beams=6,
+            length_penalty=args.lenpen,
+            num_beams=args.num_beams,
             early_stopping=True,
             # decoder_start_token_id=self.tokenizer.encode('We')[0]
-            decoder_start_token_id=self.model.config.eos_token_id
+            decoder_start_token_id=self.tokenizer.bos_token_id
+            # decoder_start_token_id=self.model.config.eos_token_id
         )
         preds = [
             self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True)
@@ -195,6 +219,49 @@ def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i : i + n]
 
+def predict(args, model, device):
+    model.eval()
+    model.freeze()
+    input_path = os.path.join(args.data_dir, 'test.source')
+    source_lns = [x.rstrip() for x in open(input_path).readlines()]
+    example_batches = chunks(source_lns, args.eval_batch_size)
+    outputs = []
+    start = time.time()
+    for example in tqdm(example_batches, total=int(len(source_lns)//args.eval_batch_size+1)):
+        outputs += model.text_predictions(example, device, args)
+    with open(os.path.join(args.output_dir, args.test_fname), 'w') as fout:
+        fout.write('\n'.join(outputs))
+    end = time.time()
+    print(f'Time to generate predictions: {end-start} sec')
+    ref = args.ref_path if args.ref_path else os.path.join(args.data_dir, 'test.target')
+    r = files2rouge.run(os.path.join(args.output_dir, args.test_fname), ref_path, to_json=True)
+    return r
+
+def tune_decoder(args, model, device):
+    lenpens = list(range(0.2, 1.2, 0.2))
+    beams = list(range(2,7))
+
+    best_r = None
+    best_r1 = 0.
+    best_lenpen = None
+    best_beam = None
+
+    print('tuning...')
+    pbar = tqdm(total=len(lenpens)*len(beams))
+    for l in lenpens:
+        for b in beams:
+            args.num_beams = b
+            args.lenpen = l
+            r = predict(args, model, device)
+            if r['rouge-1']['f'] > best_r1:
+                best_r1 = r['rouge-1']['f']
+                best_r = r
+                best_lenpen = l
+                best_beam = b
+            pbar.update(1)
+    print(f'Best lenpen: {best_lenpen} \t Best beam: {best_beam}')
+    return best_r
+
 def main(args):
 
     # If output_dir not provided, a folder will be generated in pwd
@@ -202,33 +269,22 @@ def main(args):
         args.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
         os.makedirs(args.output_dir)
     model = SummarizationTrainer(args)
-    print('HERE')
-    print(model.tokenizer._extra_ids)
+    model.tokenizer.add_special_tokens({"bos_token":"<s>"})
     # print(SummarizationTrainer.tokenizer._extra_ids)
     trainer = generic_train(model, args)
 
     # Optionally, predict on dev set and write to output_dir
     if args.do_predict:
-        # See https://github.com/huggingface/transformers/issues/3159
-        # pl use this format to create a checkpoint:
-        # https://github.com/PyTorchLightning/pytorch-lightning/blob/master\
-        # /pytorch_lightning/callbacks/model_checkpoint.py#L169
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        input_path = os.path.join(args.data_dir, 'test.source')
-        source_lns = [x.rstrip() for x in open(input_path).readlines()]
-        # inputs = model.tokenizer.batch_encode_plus(source_lns, max_length=1024, return_tensors='pt', pad_to_max_length=True)['input_ids'].to(device)
-        example_batches = chunks(source_lns, args.eval_batch_size)
         checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
         model = model.load_from_checkpoint(checkpoints[-1]).to(device)
-        model.device = device
-        model.eval()
-        model.freeze()
-        outputs = []
-        for example in example_batches:
-            outputs += (model.text_predictions(example))
-        with open(os.path.join(args.output_dir, args.test_fname), 'w') as fout:
-            fout.write('\n'.join(outputs))
-
+        model.tokenizer.add_special_tokens({"bos_token":"<s>"})
+        if args.tune_decoder:
+            r = tune_decoder(args, model, device)
+        else:
+            r = predict(args, model, device)
+        pprint(r)
+            
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     add_generic_args(parser, os.getcwd())
