@@ -183,13 +183,18 @@ class SummarizationTrainer(BaseTransformer):
             default=1.0
         )
         parser.add_argument(
+            "--test_epoch",
+            type=int,
+            default=-1
+        )
+        parser.add_argument(
             "--num_beams",
             type=int,
             default=6
         )
         parser.add_argument(
             "--tune_decoder",
-            action='store_true'
+            action='store_true',
             default=False
         )
         return parser
@@ -234,7 +239,7 @@ def predict(args, model, device):
     end = time.time()
     print(f'Time to generate predictions: {end-start} sec')
     ref = args.ref_path if args.ref_path else os.path.join(args.data_dir, 'test.target')
-    r = files2rouge.run(os.path.join(args.output_dir, args.test_fname), ref_path, to_json=True)
+    r = files2rouge.run(os.path.join(args.output_dir, args.test_fname), ref, to_json=True)
     return r
 
 def tune_decoder(args, model, device):
@@ -276,7 +281,10 @@ def main(args):
     # Optionally, predict on dev set and write to output_dir
     if args.do_predict:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
+        if args.test_epoch != -1:
+            checkpoints = [os.path.join(args.output_dir, f"checkpointepoch={args.test_epoch}.ckpt")]
+        else:
+            checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
         model = model.load_from_checkpoint(checkpoints[-1]).to(device)
         model.tokenizer.add_special_tokens({"bos_token":"<s>"})
         if args.tune_decoder:
