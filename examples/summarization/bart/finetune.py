@@ -184,6 +184,11 @@ class SummarizationTrainer(BaseTransformer):
             default=1.0
         )
         parser.add_argument(
+            "--test_epoch",
+            type=int,
+            default=-1
+        )
+        parser.add_argument(
             "--num_beams",
             type=int,
             default=6
@@ -278,7 +283,10 @@ def main(args):
     # Optionally, predict on dev set and write to output_dir
     if args.do_predict:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
+        if args.test_epoch != -1:
+            checkpoints = [os.path.join(args.output_dir, f"checkpointepoch={args.test_epoch}.ckpt")]
+        else:
+            checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
         model = model.load_from_checkpoint(checkpoints[-1]).to(device)
         model.tokenizer.add_special_tokens({"bos_token":"<s>"})
         if args.tune_decoder:
