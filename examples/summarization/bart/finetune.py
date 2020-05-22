@@ -19,6 +19,7 @@ import files2rouge
 from tqdm import tqdm 
 import re
 from pprint import pprint
+import numpy as np 
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ class SummarizationTrainer(BaseTransformer):
         )
         parser.add_argument(
             "--tune_decoder",
-            action='store_true'
+            action='store_true',
             default=False
         )
         return parser
@@ -232,13 +233,14 @@ def predict(args, model, device):
     with open(os.path.join(args.output_dir, args.test_fname), 'w') as fout:
         fout.write('\n'.join(outputs))
     end = time.time()
-    print(f'Time to generate predictions: {end-start} sec')
+    print(f'Time to generate predictions: {end-start} sec\n\n')
     ref = args.ref_path if args.ref_path else os.path.join(args.data_dir, 'test.target')
-    r = files2rouge.run(os.path.join(args.output_dir, args.test_fname), ref_path, to_json=True)
+    r = files2rouge.run(os.path.join(args.output_dir, args.test_fname), ref, to_json=True)
     return r
 
 def tune_decoder(args, model, device):
-    lenpens = list(range(0.2, 1.2, 0.2))
+    lenpens = list(np.arange(0.2, 1.2, 0.2))
+    lenpens = [round(l, 2) for l in lenpens]
     beams = list(range(2,7))
 
     best_r = None
