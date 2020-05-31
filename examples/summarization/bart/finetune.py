@@ -7,7 +7,7 @@ import time
 import torch
 from torch.utils.data import DataLoader
 
-from lightning_base import BaseTransformer, add_generic_args, generic_train, get_linear_schedule_with_warmup
+from lightning_base import BaseTransformer, add_generic_args, generic_train, get_linear_schedule_with_warmup, log_hyperparams
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 try:
@@ -20,6 +20,18 @@ from tqdm import tqdm
 import re
 from pprint import pprint
 import numpy as np 
+import json
+from os.path import join
+import shutil
+import time
+import re
+import logging
+import numpy as np
+import random
+import string
+import shutil
+import files2rouge
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +107,8 @@ class SummarizationTrainer(BaseTransformer):
         return self.validation_end(outputs)
 
     def test_epoch_end(self, outputs):
-        output_test_predictions_file = os.path.join(self.hparams.output_dir, "test_predictions.txt")
-        output_test_targets_file = os.path.join(self.hparams.output_dir, "test_targets.txt")
+        output_test_predictions_file = os.path.join(self.hparams.save_pred_dir, "test_predictions.txt")
+        output_test_targets_file = os.path.join(self.hparams.save_pred_dir, "test_targets.txt")
         # write predictions and targets for later rouge evaluation.
         with open(output_test_predictions_file, "w+") as p_writer, open(output_test_targets_file, "w+") as t_writer:
             for output_batch in outputs:
@@ -165,6 +177,13 @@ class SummarizationTrainer(BaseTransformer):
             help="The directory for tensorboard_logs",
         )
         parser.add_argument(
+            "--save_pred_dir",
+            default='',
+            type=str,
+            required=False,
+            help="Path to saved checkpoint"
+        )
+        parser.add_argument(
             "--visible_gpus",
             type=str
         )
@@ -189,7 +208,8 @@ class SummarizationTrainer(BaseTransformer):
             default=-1
         )
         parser.add_argument(
-            "--num_beams",
+            "--num_beams", '--beam',
+            dest='num_beams',
             type=int,
             default=6
         )
@@ -198,6 +218,10 @@ class SummarizationTrainer(BaseTransformer):
             action='store_true',
             default=False
         )
+        parser.add_argument('--multitarget', action='store_true', default=False)
+        parser.add_argument('--quick', action='store_true', default=False)
+        parser.add_argument('--rouge_only', action='store_true', default=False, help='flag if you don\'t want to run predictions')
+        parser.add_argument('--percentages', action='store_true', default=False, help='flag if you want to print as percentages')
         return parser
 
     def text_predictions(self, batch, device, args):
@@ -210,9 +234,7 @@ class SummarizationTrainer(BaseTransformer):
             length_penalty=args.lenpen,
             num_beams=args.num_beams,
             early_stopping=True,
-            # decoder_start_token_id=self.tokenizer.encode('We')[0]
             decoder_start_token_id=self.tokenizer.bos_token_id
-            # decoder_start_token_id=self.model.config.eos_token_id
         )
         preds = [
             self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True)
@@ -225,22 +247,34 @@ def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i : i + n]
 
-def predict(args, model, device):
-    model.eval()
-    model.freeze()
-    input_path = os.path.join(args.data_dir, 'test.source')
-    source_lns = [x.rstrip() for x in open(input_path).readlines()]
-    example_batches = chunks(source_lns, args.eval_batch_size)
-    outputs = []
-    start = time.time()
-    for example in tqdm(example_batches, total=int(len(source_lns)//args.eval_batch_size+1)):
-        outputs += model.text_predictions(example, device, args)
-    with open(os.path.join(args.output_dir, args.test_fname), 'w') as fout:
-        fout.write('\n'.join(outputs))
-    end = time.time()
-    print(f'Time to generate predictions: {end-start} sec\n\n')
-    ref = args.ref_path if args.ref_path else os.path.join(args.data_dir, 'test.target')
-    r = files2rouge.run(os.path.join(args.output_dir, args.test_fname), ref, to_json=True)
+def predict(args, model, device, test_fname='test.hypo'):
+    if not args.rouge_only:
+        model.eval()
+        model.freeze()
+        input_path = os.path.join(args.data_dir, 'test.source')
+        source_lns = [x.rstrip() for x in open(input_path).readlines()]
+        example_batches = chunks(source_lns, args.eval_batch_size)
+        outputs = []
+        start = time.time()
+        for example in tqdm(example_batches, total=int(len(source_lns)//args.eval_batch_size+1)):
+            outputs += model.text_predictions(example, device, args)
+        with open(os.path.join(args.save_pred_dir, test_fname), 'w') as fout:
+            fout.write('\n'.join(outputs))
+        end = time.time()
+        print(f'Time to generate predictions: {end-start} sec\n\n')
+    if args.ref_path:
+        ref = args.ref_path
+    elif args.multitarget:
+        ref = os.path.join(args.data_dir, 'test-multitarget.jsonl')
+    elif not quick:
+        ref = os.path.join(args.data_dir, 'test.jsonl')
+    else:
+        ref = os.path.join(args.data_dir, 'test.target')
+    
+    cand = os.path.join(args.save_pred_dir, test_fname)
+    # r = files2rouge.run(os.path.join(args.save_pred_dir, test_fname), ref, to_json=True)
+    r = test_rouge(cand, ref, outpath=os.path.join(args.save_pred_dir, test_fname + '.rouge'), 
+                    multitarget=args.multitarget, quick=args.quick)
     return r
 
 def tune_decoder(args, model, device):
@@ -253,13 +287,16 @@ def tune_decoder(args, model, device):
     best_lenpen = None
     best_beam = None
 
+    os.makedirs(os.path.join(args.save_pred_dir, 'tuning'), exist_ok=True)
+
     print('tuning...')
     pbar = tqdm(total=len(lenpens)*len(beams))
     for l in lenpens:
         for b in beams:
             args.num_beams = b
             args.lenpen = l
-            r = predict(args, model, device)
+            test_fname = f'tune-beam{b}-lenpen{l}.{args.test_fname}'
+            r = predict(args, model, device, test_fname=test_fname)
             if r['rouge-1']['f'] > best_r1:
                 best_r1 = r['rouge-1']['f']
                 best_r = r
@@ -267,7 +304,124 @@ def tune_decoder(args, model, device):
                 best_beam = b
             pbar.update(1)
     print(f'Best lenpen: {best_lenpen} \t Best beam: {best_beam}')
+    best_r['beam'] = best_beam
+    best_r['lenpen'] = best_lenpen
+
     return best_r
+
+def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/', multitarget=False, quick=False):
+    print(cand)
+    print(ref)
+    print(multitarget, quick)
+
+    def random_string(stringLength=8):
+        """Generate a random string of fixed length """
+        letters= string.ascii_lowercase
+        return ''.join(random.sample(letters,stringLength))
+    tmp_path = join(tmp_dir, 'tmp'+random_string())
+    if os.path.exists(tmp_path):
+        shutil.rmtree(tmp_path)
+    os.makedirs(tmp_path)
+    # print(tmp_path)
+    hyp_path = join(tmp_path, 'hyp.txt')
+    ref_path = join(tmp_path, 'ref.txt')
+
+    candidates = [line.strip().lower() for line in open(cand, encoding='utf-8')]
+    if multitarget or not quick:
+        references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
+    else:
+        references = [line.lower().strip() for line in open(ref, encoding='utf-8')]
+    assert len(candidates) == len(references), f'{tmp_dir}: len cand {len(candidates)} len ref {len(references)}'
+
+    if quick and not multitarget:
+        hyp = open(join(tmp_path, 'hyp.txt'), 'w')
+        hyp.write('\n'.join([c.replace('\n', '') for c in candidates]))
+        hyp.close()
+        ref = open(join(tmp_path, 'ref.txt'), 'w')
+        ref.write('\n'.join([r.lower().replace('\n', '') for r in references]))
+        ref.close()
+        _r = files2rouge.run(ref_path, hyp_path, to_json=True)
+        return _r
+
+    paper_ids = [json.loads(line.strip())['paper_id'] for line in open(ref, encoding='utf-8')]
+    all_scores = []
+    save_scores = []
+
+    # For each prediction
+    for cand_idx, cand in enumerate(candidates):
+        curr_targets = references[cand_idx]
+        curr_scores = []
+        hyp = open(join(tmp_path, 'hyp.txt'), 'w')
+        hyp.write(cand)
+        hyp.close()
+        # import ipdb; ipdb.set_trace()
+        for tgt in curr_targets:
+            tgt = tgt.lower().strip('\n')
+            ref = open(join(tmp_path, 'ref.txt'), 'w')
+            ref.write(tgt)
+            ref.close()
+            try:
+                _r = files2rouge.run(ref_path, hyp_path, to_json=True)
+            except Exception as e:
+                print(e)
+                exit(0)
+            curr_scores.append(_r)
+        # Take the max of curr scores
+        r1 = [r['rouge-1']['f'] for r in curr_scores]
+        max_idx = r1.index(max(r1))
+
+        save_scores.append({
+                        'paper_id': paper_ids[cand_idx],
+                        'all_scores': curr_scores,
+                        'max_idx': max_idx,
+                        'prediction': cand,
+                        'target': curr_targets
+                            })
+        all_scores.append(curr_scores[max_idx])
+    # Average across all scores
+    avg_scores = {"rouge-1": {
+                    "f": [],
+                    "p": [],
+                    "r":[]
+                    },
+                "rouge-2": {
+                    "f": [],
+                    "p": [],
+                    "r": []
+                    },
+                "rouge-l": {
+                    "f": [],
+                    "p": [],
+                    "r": []
+                    }
+                }
+    for score in all_scores:
+        for r_type in score.keys():
+            for m_type in score[r_type].keys():
+                x = score[r_type][m_type]
+                # print(x)
+                avg_scores[r_type][m_type].append(x)
+    #import ipdb; ipdb.set_trace()          
+    for r_type in avg_scores.keys():
+        for m_type in avg_scores[r_type].keys():
+            x = avg_scores[r_type][m_type]
+            avg_scores[r_type][m_type] = np.mean(x)
+
+    if outpath:
+        with open(outpath, 'w') as fout:
+            for s in save_scores:
+                fout.write(json.dumps(s) + '\n')
+
+    shutil.rmtree(tmp_path)
+    return avg_scores
+
+def maybe_percentages(r, percentages):
+    if percentages:
+        for r_type in ['rouge-1', 'rouge-2', 'rouge-l']:
+            for m_type in ['f', 'p', 'r']:
+                x = r[r_type][m_type]
+                r[r_type][m_type] = x * 100
+    return r
 
 def main(args):
 
@@ -275,10 +429,13 @@ def main(args):
     if not args.output_dir:
         args.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
         os.makedirs(args.output_dir)
+
+
     model = SummarizationTrainer(args)
     model.tokenizer.add_special_tokens({"bos_token":"<s>"})
-    # print(SummarizationTrainer.tokenizer._extra_ids)
+# print(SummarizationTrainer.tokenizer._extra_ids)
     trainer = generic_train(model, args)
+    log_hyperparams(model)
 
     # Optionally, predict on dev set and write to output_dir
     if args.do_predict:
@@ -287,12 +444,26 @@ def main(args):
             checkpoints = [os.path.join(args.output_dir, f"checkpointepoch={args.test_epoch}.ckpt")]
         else:
             checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
-        model = model.load_from_checkpoint(checkpoints[-1]).to(device)
+        print(f'loading checkpoint from {checkpoints[-1]}')
+        # args.model_name_or_path = checkpoints[-1]
+        # model = SummarizationTrainer(args).to(device)
+        # import ipdb; ipdb.set_trace()
+        # model = model.load_from_checkpoint(checkpoints[-1]) #.to(device)
+        model.load_state_dict(torch.load(checkpoints[-1])['state_dict'])
+        model = model.to(device)
         model.tokenizer.add_special_tokens({"bos_token":"<s>"})
         if args.tune_decoder:
             r = tune_decoder(args, model, device)
         else:
-            r = predict(args, model, device)
+            r = predict(args, model, device, test_fname=args.test_fname)
+            r['beam'] = args.num_beams
+            r['lenpen'] = args.lenpen
+
+        r = maybe_percentages(r, args.percentages)
+
+        with open(os.path.join(args.save_pred_dir, f'{args.test_fname}.score'), 'w') as f:
+            json.dump(r, f, indent=4)
+    
         pprint(r)
             
 if __name__ == "__main__":
