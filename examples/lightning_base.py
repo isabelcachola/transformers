@@ -6,6 +6,7 @@ import random
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import json
 
 from transformers import (
     AdamW,
@@ -237,6 +238,11 @@ def add_generic_args(parser, root_dir):
     parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
 
 
+def log_hyperparams(model: pl.LightningModule):
+    model.config.save_pretrained(model.hparams.output_dir)
+    with open(os.path.join(model.hparams.output_dir, "hparam.json"), "w") as f:
+        json.dump(model.hparams.__dict__, f)
+
 def generic_train(model: BaseTransformer, args: argparse.Namespace):
     # init model
     set_seed(args)
@@ -281,9 +287,18 @@ def generic_train(model: BaseTransformer, args: argparse.Namespace):
                 )
         train_params["logger"] = logger
 
+    if args.visible_gpus:
+        if ',' in args.visible_gpus:
+            args.visible_gpus = args.visible_gpus.split(',')
+            args.visible_gpus = [int(i) for i in args.visible_gpus]
+        else:
+            args.visible_gpus = [int(args.visible_gpus)]
+        train_params['gpus'] = args.visible_gpus
+
     trainer = pl.Trainer(**train_params)
 
     if args.do_train:
         trainer.fit(model)
+        log_hyperparams(model)
 
     return trainer
